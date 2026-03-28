@@ -190,5 +190,5 @@ Examples of discounts.
                 end
     ```
    
-# Reference for interview
+# Main Rule Engine file
 1. **Refer the folder `src/modules/rules` for the overview of rule engine.**
