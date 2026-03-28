@@ -1,7 +1,7 @@
-"""Test cases for Rule Engine - 16 tests covering all behavioral equivalence classes.
+"""Test cases for Rule Engine - 18 tests covering all behavioral equivalence classes.
 
 Test Categories:
-1. Filter Logic (4 tests) - Item filtering, include/exclude, min_qty on filtered items
+1. Filter Logic (6 tests) - Item filtering, include/exclude, min_qty, stacked/unstackable puma coupons
 2. Eval Types (4 tests) - PERCENT, FLAT, ITEM discount calculations
 3. Stacking Logic (4 tests) - Stackable vs non-stackable combinations
 4. Two-Phase Evaluation (2 tests) - Item then total phases, negative guard
@@ -22,7 +22,7 @@ from src.modules.rules.engine import (
 
 
 class TestFilterLogic:
-    """Tests for filter matching logic - 4 tests."""
+    """Tests for filter matching logic - 6 tests."""
     
     @pytest.mark.asyncio
     async def test_include_filter_matches(self, rule_engine, context_factory, coupon_factory):
@@ -112,10 +112,83 @@ class TestFilterLogic:
         # Only puma gets discount: 10% of 100 = 10
         assert plan.final_discount == Decimal("10.00")
         assert plan.final_total == Decimal("240.00")  # 250 - 10
+    
+    @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    async def test_two_stackable_puma_coupons(self, rule_engine, context_factory, coupon_factory):
+        """1 puma + 1 adidas item, 2 puma coupons at item level with stackable=True.
+        
+        Both coupons should apply only to puma item and stack.
+        """
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "puma-001", "quantity": 1, "unit_price": 100, "categories": ["puma"]},
+                {"product_id": "adidas-001", "quantity": 1, "unit_price": 80, "categories": ["adidas"]},
+            ],
+            coupons=[
+                coupon_factory(
+                    code="PUMA10",
+                    filters={"include": ["puma"]},
+                    eval_config={"category": "item", "type": "percent", "value": 10},
+                    stackable=True,
+                ),
+                coupon_factory(
+                    code="PUMA20",
+                    filters={"include": ["puma"]},
+                    eval_config={"category": "item", "type": "percent", "value": 20},
+                    stackable=True,
+                ),
+            ],
+        )
+        
+        plan = await rule_engine.evaluate(ctx)
+        
+        # Both apply to puma only: 10% + 20% = 30% of 100 = 30 discount
+        # Adidas gets no discount
+        assert plan.final_discount == Decimal("30.00")
+        assert plan.final_total == Decimal("150.00")  # 180 - 30
+        assert len(plan.applied_coupons) == 2
+    
+    @pytest.mark.asyncio
+    async def test_two_pumas_unstackable_priority(self, rule_engine, context_factory, coupon_factory):
+        """Two unstackable PUMA coupons with different priorities - higher priority wins.
 
+        Priority 10 gives 10% = 10, Priority 20 gives 20% = 20.
+        For non-stackable, max discount (20) wins regardless of priority.
+        """
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "puma-001", "quantity": 1, "unit_price": 100, "categories": ["puma"]},
+                {"product_id": "adidas-001", "quantity": 1, "unit_price": 80, "categories": ["adidas"]},
+            ],
+            coupons=[
+                coupon_factory(
+                    code="PUMA10",
+                    filters={"include": ["puma"]},
+                    eval_config={"category": "item", "type": "percent", "value": 10},
+                    stackable=False,
+                    priority=10,
+                ),
+                coupon_factory(
+                    code="PUMA20",
+                    filters={"include": ["puma"]},
+                    eval_config={"category": "item", "type": "percent", "value": 20},
+                    stackable=False,
+                    priority=20,
+                ),
+            ],
+        )
+        
+        plan = await rule_engine.evaluate(ctx)
 
+        # Non-stackable: max discount wins (20% = 20), not priority
+        assert plan.final_discount == Decimal("20.00")
+        assert plan.final_total == Decimal("160.00")  # 180 - 20
+        assert len(plan.applied_coupons) == 2  # Both evaluated, max wins
+        # Both coupons applied to same item, higher priority listed first
+        assert plan.applied_coupons[0].code == "PUMA10"
+        assert plan.applied_coupons[1].code == "PUMA20"
 class TestEvalTypes:
-    """Tests for evaluation type calculations - 4 tests."""
     
     @pytest.mark.asyncio
     async def test_percent_discount(self, rule_engine, context_factory, coupon_factory):
