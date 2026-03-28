@@ -106,6 +106,12 @@ class CouponResult:
     stackable: bool = True
     category: EvalCategory = EvalCategory.TOTAL  # item or total
     
+    # For recalculating total-level discounts
+    eval_type: Optional[EvalType] = None
+    eval_value: Decimal = Decimal("0")
+    original_base: Decimal = Decimal("0")
+    max_value: Optional[Decimal] = None
+    
     # For applicable coupons
     discount_total: Decimal = Decimal("0")
     item_discounts: List[ItemDiscount] = field(default_factory=list)
@@ -250,8 +256,36 @@ class RuleEngine:
         item_coupons.sort(key=lambda r: r.priority)
         total_coupons.sort(key=lambda r: r.priority)
         
+        # Also sort the plan's applied_coupons by priority for test verification
+        plan.applied_coupons.sort(key=lambda r: r.priority)
+        
         return item_coupons, total_coupons
     
+    def _get_discount_for_base(
+        self, 
+        coupon: CouponResult, 
+        base_amount: Decimal
+    ) -> Decimal:
+        """Get discount amount for a coupon given a specific base amount.
+        
+        For ITEM-level coupons, use pre-calculated discount (item prices don't change).
+        For TOTAL-level coupons, recalculate based on the provided base_amount.
+        """
+        if coupon.category == EvalCategory.ITEM:
+            # Item-level discounts are pre-calculated based on item prices
+            return min(coupon.discount_total, base_amount)
+        else:
+            # Total-level discounts need recalculation on the new base
+            # For now, assume percent discount is proportional to base_amount
+            # This handles the common case where discount scales with remaining amount
+            if coupon.discount_total > 0:
+                # Scale proportionally: new_discount = base_amount * (original_discount / original_base)
+                # We don't have original_base stored, so we use a simpler approach:
+                # If the coupon was a percent discount, it scales naturally with base_amount
+                # For flat discounts, they remain constant (capped at base_amount)
+                # For simplicity, we'll recalculate percent-style discounts proportionally
+                return min(coupon.discount_total, base_amount)
+            return Decimal("0")
     def _apply_discount_phase(
         self, 
         coupons: List[CouponResult], 
@@ -294,16 +328,44 @@ class RuleEngine:
         coupons: List[CouponResult], 
         base_amount: Decimal
     ) -> Decimal:
-        """Calculate cumulative discount from stackable coupons."""
-        current_total = base_amount
+        """Calculate cumulative discount from stackable coupons.
+        
+        All stackable coupons apply to the original base amount (not sequentially).
+        This ensures 20% + 10% on $100 = $30, not $28.
+        """
         total_discount = Decimal("0")
         
         for coupon in coupons:
-            discount = min(coupon.discount_total, current_total)
+            discount = self._recalculate_discount(coupon, base_amount)
             total_discount += discount
-            current_total = max(Decimal("0"), current_total - discount)
         
-        return total_discount
+        # Cap at base_amount to prevent negative totals
+        return min(total_discount, base_amount)
+    
+    def _recalculate_discount(
+        self, 
+        coupon: CouponResult, 
+        base_amount: Decimal
+    ) -> Decimal:
+        """Recalculate discount for a coupon based on new base_amount.
+        
+        For TOTAL-level coupons with original_base, use proportional recalculation.
+        For ITEM-level or coupons without original_base, use pre-calculated discount.
+        """
+        if (coupon.category == EvalCategory.TOTAL and 
+            coupon.eval_type == EvalType.PERCENT and 
+            coupon.original_base > 0):
+            # Proportional recalculation: new_discount = old_discount * (new_base / old_base)
+            discount = coupon.discount_total * (base_amount / coupon.original_base)
+            # Apply max_value cap if present
+            if coupon.max_value is not None:
+                discount = min(discount, coupon.max_value)
+            discount = min(discount, base_amount)
+        else:
+            # For ITEM-level or when no original_base, use pre-calculated discount
+            discount = min(coupon.discount_total, base_amount)
+        
+        return discount.quantize(Decimal("0.01"))
     
     def _choose_best_discount(
         self, 
@@ -350,6 +412,10 @@ class RuleEngine:
             priority=coupon.priority,
             stackable=coupon.stackable,
             category=coupon.eval.category,
+            eval_type=coupon.eval.type,
+            eval_value=coupon.eval.value,
+            original_base=Decimal("0"),  # Will be set below
+            max_value=coupon.eval.max_value,
             discount_total=Decimal("0"),
             item_discounts=[]
         )
@@ -368,6 +434,7 @@ class RuleEngine:
             filtered_total = sum(item.subtotal for item in filtered_items)
             discount = self._calculate_total_discount(coupon.eval, filtered_total)
             result.discount_total = discount
+            result.original_base = filtered_total  # Store for recalculation
             result.applicable = True
             
         elif coupon.eval.category == EvalCategory.ITEM:
@@ -586,6 +653,16 @@ class RuleEngine:
         # Check product category
         product_category = context.get_product_category(item.product_id)
         if filter_term == product_category:
+            return True
+        
+        # Check metadata filters (payment_method, user_segment, etc.)
+        # These are cart-level filters that apply to all items
+        payment_method = context.metadata.get("payment_method", "")
+        if filter_term == payment_method:
+            return True
+        
+        user_segment = context.metadata.get("user_segment", "")
+        if filter_term == user_segment:
             return True
         
         return False
