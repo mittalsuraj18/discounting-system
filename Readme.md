@@ -193,4 +193,10 @@ Examples of discounts.
 # Main Rule Engine file
 1. **Refer the folder `src/modules/rules` for the overview of rule engine.**
 
-# Tests / What needs to be tested.
+# Testing Strategy
+
+1. Unit Tests: We need to test the main pricing application logic
+    1. All the specific rules logic in the RuleEngine classes.
+2. Integration tests:
+    1. Given a bunch of coupons and cart items. Integration tests for those. 
+3. Sample test cases (Added these in the tests directory. Including some edge cases)

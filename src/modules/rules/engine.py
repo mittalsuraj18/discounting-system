@@ -388,13 +388,10 @@ class RuleEngine:
         final_discount = item_result.best_discount + total_result.best_discount
         
         plan.final_discount = final_discount
-        plan.final_total = max(Decimal("0"), original_total - final_discount)
+        plan.final_total = original_total - final_discount
         
         plan.stacked_discount = item_result.stacked_discount + total_result.stacked_discount
-        plan.stacked_final_total = max(
-            Decimal("0"), 
-            original_total - plan.stacked_discount
-        )
+        plan.stacked_final_total = original_total - plan.stacked_discount
         plan.unstacked_alternatives = (
             item_result.unstacked_alternatives + total_result.unstacked_alternatives
         )
@@ -420,7 +417,12 @@ class RuleEngine:
             item_discounts=[]
         )
         
-        # Check filters - returns (passes, reason, filtered_items)
+        # Reject coupons with negative discount values (surcharges not allowed)
+        if coupon.eval.value < 0:
+            result.reason = "Negative discount value not allowed"
+            return result
+        
+        # Check filters
         filter_check = self._check_filters(coupon.filters, context, coupon)
         if not filter_check[0]:
             result.reason = filter_check[1]
@@ -545,12 +547,19 @@ class RuleEngine:
             # For total category with item type: value is number of free items
             discount = base_amount * (eval_config.value / Decimal("100"))
         
+        # Clamp to minimum 0 (negative discounts/surcharges not allowed)
+        discount = max(discount, Decimal("0"))
+        
         # Apply max_value cap
         if eval_config.max_value is not None:
             discount = min(discount, eval_config.max_value)
         
-        # Ensure discount doesn't exceed base
-        discount = min(discount, base_amount)
+        # Ensure discount doesn't exceed base, but only if base is positive
+        # For negative base (cart total), no discount can be applied
+        if base_amount > 0:
+            discount = min(discount, base_amount)
+        else:
+            discount = Decimal("0")
         
         return discount.quantize(Decimal("0.01"))
     
@@ -608,9 +617,12 @@ class RuleEngine:
             # Buy X get Y: value is quantity of free items
             if item.quantity > 0:
                 free_ratio = min(eval_config.value / Decimal(item.quantity), Decimal("1"))
-                return item_total * free_ratio
+                discount = item_total * free_ratio
+                # Clamp to minimum 0 (negative discounts/surcharges not allowed)
+                return max(discount, Decimal("0"))
         
-        return Decimal("0")
+        # Clamp to minimum 0 (safety guard against negative discounts)
+        return max(discount, Decimal("0"))
     
     def _item_matches_filters(
         self, 

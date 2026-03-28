@@ -1,4 +1,4 @@
-"""Test cases for Rule Engine - 20 tests covering all behavioral equivalence classes.
+"""Test cases for Rule Engine - 23 tests covering all behavioral equivalence classes.
 
 Test Categories:
 1. Filter Logic (6 tests) - Item filtering, include/exclude, min_qty, stacked/unstackable puma coupons
@@ -6,7 +6,8 @@ Test Categories:
 3. Stacking Logic (4 tests) - Stackable vs non-stackable combinations
 4. Two-Phase Evaluation (2 tests) - Item then total phases, negative guard
 5. Integration (2 tests) - Readme examples: PUMA BOGO, ICICI percent cap
-6. Negative Values (4 tests) - Returns/refunds with negative unit prices
+6. Negative Item Values (4 tests) - Returns/refunds with negative unit prices
+7. Negative Discount Value Rejection (1 test) - Surcharges not allowed
 """
 import uuid
 from decimal import Decimal
@@ -113,8 +114,7 @@ class TestFilterLogic:
         # Only puma gets discount: 10% of 100 = 10
         assert plan.final_discount == Decimal("10.00")
         assert plan.final_total == Decimal("240.00")  # 250 - 10
-    
-    @pytest.mark.asyncio
+
     @pytest.mark.asyncio
     async def test_two_stackable_puma_coupons(self, rule_engine, context_factory, coupon_factory):
         """1 puma + 1 adidas item, 2 puma coupons at item level with stackable=True.
@@ -189,6 +189,8 @@ class TestFilterLogic:
         # Both coupons applied to same item, higher priority listed first
         assert plan.applied_coupons[0].code == "PUMA10"
         assert plan.applied_coupons[1].code == "PUMA20"
+
+
 class TestEvalTypes:
     
     @pytest.mark.asyncio
@@ -502,7 +504,6 @@ class TestIntegration:
 
 class TestNegativeItemValues:
     """Tests for items with negative values (returns/refunds) - 4 tests."""
-
     @pytest.mark.asyncio
     async def test_negative_unit_price_item(self, rule_engine, context_factory, coupon_factory):
         """Negative unit price item reduces cart total - discount applies to net total."""
@@ -597,3 +598,23 @@ class TestNegativeItemValues:
         # Discount is 0 (can't discount negative cart), final remains -50
         assert plan.final_discount == Decimal("0.00")
         assert plan.final_total == Decimal("-50.00")
+
+
+    @pytest.mark.asyncio
+    async def test_negative_discount_value_rejected(self, rule_engine, context_factory, coupon_factory):
+        """Negative discount value should cause coupon to be rejected."""
+        ctx = context_factory(
+            cart_items=[{"product_id": "item-001", "quantity": 1, "unit_price": 100}],
+            coupons=[coupon_factory(
+                code="INVALIDNEG",
+                filters={},
+                eval_config={"category": "total", "type": "percent", "value": -10},
+            )],
+        )
+        plan = await rule_engine.evaluate(ctx)
+        
+        # Coupon with negative value should be rejected
+        assert plan.final_discount == Decimal("0.00")
+        assert plan.final_total == Decimal("100.00")  # No change
+        assert len(plan.rejected_coupons) == 1
+        assert "Negative discount value not allowed" in plan.rejected_coupons[0].reason
