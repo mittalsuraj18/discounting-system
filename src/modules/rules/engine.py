@@ -215,7 +215,7 @@ class RuleEngine:
         item_coupons, total_coupons = await self._categorize_coupons(context, plan)
         
         if not item_coupons and not total_coupons:
-            plan.final_total = original_total
+            plan.final_total = max(original_total, Decimal("0"))
             return plan
         
         # Phase 1: Apply item-level discounts

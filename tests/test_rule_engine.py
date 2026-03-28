@@ -618,3 +618,25 @@ class TestNegativeItemValues:
         assert plan.final_total == Decimal("100.00")  # No change
         assert len(plan.rejected_coupons) == 1
         assert "Negative discount value not allowed" in plan.rejected_coupons[0].reason
+
+
+    @pytest.mark.asyncio
+    async def test_negative_cart_no_coupons_floors_to_zero(self, rule_engine, context_factory):
+        """Negative cart total without any coupons should floor at 0."""
+        # Cart: 100 positive, -200 return = -100 net cart total
+        # No coupons applied - cart total should still floor at 0
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "item-001", "quantity": 1, "unit_price": 100},
+                {"product_id": "return-001", "quantity": 1, "unit_price": -200},
+            ],
+            coupons=[],
+        )
+
+        plan = await rule_engine.evaluate(ctx)
+
+        # No discounts applied, but negative cart total floors at 0
+        assert plan.final_discount == Decimal("0.00")
+        assert plan.final_total == Decimal("0.00")  # Floored at 0, not -100
+        assert len(plan.applied_coupons) == 0
+        assert len(plan.rejected_coupons) == 0
