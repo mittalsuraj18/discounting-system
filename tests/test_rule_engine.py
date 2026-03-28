@@ -1,4 +1,4 @@
-"""Test cases for Rule Engine - 18 tests covering all behavioral equivalence classes.
+"""Test cases for Rule Engine - 20 tests covering all behavioral equivalence classes.
 
 Test Categories:
 1. Filter Logic (6 tests) - Item filtering, include/exclude, min_qty, stacked/unstackable puma coupons
@@ -6,6 +6,7 @@ Test Categories:
 3. Stacking Logic (4 tests) - Stackable vs non-stackable combinations
 4. Two-Phase Evaluation (2 tests) - Item then total phases, negative guard
 5. Integration (2 tests) - Readme examples: PUMA BOGO, ICICI percent cap
+6. Negative Values (4 tests) - Returns/refunds with negative unit prices
 """
 import uuid
 from decimal import Decimal
@@ -496,3 +497,103 @@ class TestIntegration:
         # 10% of 3000 = 300, which is < 500 cap, so 300 discount
         assert plan.final_discount == Decimal("300.00")
         assert plan.final_total == Decimal("2700.00")
+
+
+
+class TestNegativeItemValues:
+    """Tests for items with negative values (returns/refunds) - 4 tests."""
+
+    @pytest.mark.asyncio
+    async def test_negative_unit_price_item(self, rule_engine, context_factory, coupon_factory):
+        """Negative unit price item reduces cart total - discount applies to net total."""
+        # Cart: 1 positive item @ 200, 1 negative item @ -50 (return)
+        # Cart total = 150
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "item-001", "quantity": 1, "unit_price": 200, "categories": ["electronics"]},
+                {"product_id": "return-001", "quantity": 1, "unit_price": -50, "categories": ["returns"]},
+            ],
+            coupons=[coupon_factory(
+                code="TENPERCENT",
+                filters={},
+                eval_config={"category": "total", "type": "percent", "value": 10},
+            )],
+        )
+
+        plan = await rule_engine.evaluate(ctx)
+
+        # 10% of 150 = 15 discount, final = 135
+        assert plan.final_discount == Decimal("15.00")
+        assert plan.final_total == Decimal("135.00")
+
+    @pytest.mark.asyncio
+    async def test_negative_item_with_include_filter(self, rule_engine, context_factory, coupon_factory):
+        """Include filter on category excludes negative items in different category."""
+        # Cart: 2 puma @ 100 each, 1 return @ -30 in different category
+        # Filter on puma, discount applies to puma items only
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "puma-001", "quantity": 2, "unit_price": 100, "categories": ["puma"]},
+                {"product_id": "return-shoe", "quantity": 1, "unit_price": -30, "categories": ["returns"]},
+            ],
+            coupons=[coupon_factory(
+                code="PUMA20",
+                filters={"include": ["puma"]},
+                eval_config={"category": "item", "type": "percent", "value": 20},
+            )],
+        )
+
+        plan = await rule_engine.evaluate(ctx)
+
+        # 20% of 200 (puma items only) = 40 discount
+        # Cart total = 200 - 30 = 170, final after discount = 130
+        assert plan.final_discount == Decimal("40.00")
+        assert plan.final_total == Decimal("130.00")  # 170 - 40
+
+    @pytest.mark.asyncio
+    async def test_mixed_positive_negative_with_flat_discount(self, rule_engine, context_factory, coupon_factory):
+        """Flat discount capped at net cart total when negative items present."""
+        # Cart: 100 + 50 - 30 = 120 net total
+        # Flat discount 150 should be capped at 120 (net cart total)
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "item-001", "quantity": 1, "unit_price": 100},
+                {"product_id": "item-002", "quantity": 1, "unit_price": 50},
+                {"product_id": "return-001", "quantity": 1, "unit_price": -30},
+            ],
+            coupons=[coupon_factory(
+                code="FLAT150",
+                filters={},
+                eval_config={"category": "total", "type": "flat", "value": 150},
+            )],
+        )
+
+        plan = await rule_engine.evaluate(ctx)
+
+        # Discount capped at cart total (120), not 150
+        assert plan.final_discount == Decimal("120.00")
+        assert plan.final_total == Decimal("0.00")
+
+    @pytest.mark.asyncio
+    async def test_negative_item_makes_cart_negative_with_discount(self, rule_engine, context_factory, coupon_factory):
+        """If negative items exceed positive, cart is negative - no discount possible."""
+        # Cart: 100 positive, -150 return = -50 net cart total
+        # No discount should be applied, final remains -50
+        ctx = context_factory(
+            cart_items=[
+                {"product_id": "item-001", "quantity": 1, "unit_price": 100},
+                {"product_id": "return-001", "quantity": 1, "unit_price": -150},
+            ],
+            coupons=[coupon_factory(
+                code="TENPERCENT",
+                filters={},
+                eval_config={"category": "total", "type": "percent", "value": 10},
+            )],
+        )
+
+        plan = await rule_engine.evaluate(ctx)
+
+        # Cart total is -50, no discount can be applied
+        # Discount is 0 (can't discount negative cart), final remains -50
+        assert plan.final_discount == Decimal("0.00")
+        assert plan.final_total == Decimal("-50.00")
