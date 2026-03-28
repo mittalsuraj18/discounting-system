@@ -388,10 +388,10 @@ class RuleEngine:
         final_discount = item_result.best_discount + total_result.best_discount
         
         plan.final_discount = final_discount
-        plan.final_total = original_total - final_discount
-        
+        plan.final_total = max(original_total - final_discount, Decimal("0"))
+
         plan.stacked_discount = item_result.stacked_discount + total_result.stacked_discount
-        plan.stacked_final_total = original_total - plan.stacked_discount
+        plan.stacked_final_total = max(original_total - plan.stacked_discount, Decimal("0"))
         plan.unstacked_alternatives = (
             item_result.unstacked_alternatives + total_result.unstacked_alternatives
         )

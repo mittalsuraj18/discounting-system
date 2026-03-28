@@ -594,10 +594,10 @@ class TestNegativeItemValues:
 
         plan = await rule_engine.evaluate(ctx)
 
-        # Cart total is -50, no discount can be applied
-        # Discount is 0 (can't discount negative cart), final remains -50
+        # Cart total is -50, but final total floors at 0 (never negative)
+        # Discount is 0 (can't discount negative cart)
         assert plan.final_discount == Decimal("0.00")
-        assert plan.final_total == Decimal("-50.00")
+        assert plan.final_total == Decimal("0.00")  # Floored at 0, not -50
 
 
     @pytest.mark.asyncio
