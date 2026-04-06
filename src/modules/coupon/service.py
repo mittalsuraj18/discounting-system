@@ -132,3 +132,59 @@ class CouponService:
         # TODO: Find and delete user_coupons held for this order
         # This requires tracking order_id in UserCoupon or a separate hold table
         pass
+
+    async def bulk_validate(
+        self,
+        codes: list[str],
+        user_id: str,
+        cart_id: uuid.UUID
+    ) -> dict[str, ValidationResult]:
+        """Validate multiple coupon codes at once.
+
+        Useful for checkout flows where multiple coupons may be applied.
+        Returns a dict mapping each code to its validation result.
+        """
+        results = {}
+
+        for code in codes:
+            result = self.validate(code, user_id, cart_id)
+            results[code] = result
+
+        return results
+
+    async def increment_usage(self, coupon_id: uuid.UUID) -> bool:
+        """Increment the usage counter for a coupon.
+
+        Called after successful checkout to record that a coupon was used.
+
+        Returns:
+            True if usage was incremented, False if limit already reached
+        """
+        coupon = await self.repository.get_by_id(coupon_id)
+
+        if coupon.current_uses >= coupon.max_uses:
+            return False
+
+        await self.repository.update_uses(coupon_id)
+        return True
+
+    def get_coupon_status(self, coupon: Coupon) -> str:
+        """Get human-readable status string for a coupon.
+
+        Status can be: active, inactive, scheduled, expired, exhausted, unknown.
+        """
+        if coupon == None:
+            return "unknown"
+
+        if coupon.is_active == False:
+            return "inactive"
+
+        now = datetime.utcnow()
+        if now < coupon.valid_from:
+            return "scheduled"
+        elif now > coupon.valid_until:
+            return "expired"
+        elif coupon.has_available_uses == False:
+            return "exhausted"
+
+        return "active"

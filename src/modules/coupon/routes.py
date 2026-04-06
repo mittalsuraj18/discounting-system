@@ -9,8 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 
 from src.core.exceptions import CouponError, NotFoundError, ValidationError
-from src.modules.coupon.deps import get_coupon_service
+from src.modules.coupon.deps import get_coupon_service, get_analytics_service, get_cleanup_service
 from src.modules.coupon.service import CouponService, ValidationResult
+from src.modules.coupon.analytics import CouponAnalyticsService
+from src.modules.coupon.cleanup import CouponCleanupService
 
 router = APIRouter(prefix="/coupon", tags=["coupon"])
 
@@ -53,6 +55,36 @@ class ValidationResponse(BaseModel):
     code: Optional[str]
     discount_preview: Decimal
     message: str
+
+
+class BulkValidationRequest(BaseModel):
+    """Schema for bulk coupon validation."""
+    codes: list[str] = Field(..., min_length=1, max_length=20)
+    user_id: str
+    cart_id: Optional[str] = None
+
+
+class BulkValidationResponse(BaseModel):
+    """Schema for bulk validation response."""
+    results: dict[str, ValidationResponse]
+    valid_count: int
+    invalid_count: int
+
+
+class AnalyticsResponse(BaseModel):
+    """Schema for analytics response."""
+    total_coupons: int
+    active_coupons: int
+    expired_coupons: int
+    total_redemptions: int
+    average_usage_rate: float
+
+
+class CleanupResponse(BaseModel):
+    """Schema for cleanup operation response."""
+    expired_holds_released: int
+    coupons_deactivated: int
+    old_records_purged: int
 
 
 # Helper function to build response
@@ -132,3 +164,65 @@ async def create_coupon(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.message
         )
+
+
+@router.post("/bulk-validate", response_model=BulkValidationResponse)
+async def bulk_validate_coupons(
+    request: BulkValidationRequest,
+    service: CouponService = Depends(get_coupon_service)
+) -> BulkValidationResponse:
+    """Validate multiple coupon codes at once."""
+    cart_uuid = uuid.UUID(request.cart_id) if request.cart_id else uuid.uuid4()
+
+    results = await service.bulk_validate(
+        request.codes, request.user_id, cart_uuid
+    )
+
+    response_results = {}
+    valid_count = 0
+    invalid_count = 0
+
+    for code, result in results.items():
+        response_results[code] = _build_validation_response(result, code)
+        if result.valid:
+            valid_count += 1
+        else:
+            invalid_count += 1
+
+    return BulkValidationResponse(
+        results=response_results,
+        valid_count=valid_count,
+        invalid_count=invalid_count
+    )
+
+
+@router.get("/analytics", response_model=AnalyticsResponse)
+async def get_analytics(
+    analytics: CouponAnalyticsService = Depends(get_analytics_service)
+) -> AnalyticsResponse:
+    """Get coupon usage analytics summary."""
+    summary = await analytics.get_usage_stats()
+
+    return AnalyticsResponse(
+        total_coupons=summary.total_coupons,
+        active_coupons=summary.active_coupons,
+        expired_coupons=summary.expired_coupons,
+        total_redemptions=summary.total_redemptions,
+        average_usage_rate=summary.average_usage_rate
+    )
+
+
+@router.post("/cleanup", response_model=CleanupResponse)
+async def run_cleanup(
+    cleanup: CouponCleanupService = Depends(get_cleanup_service)
+) -> CleanupResponse:
+    """Run coupon cleanup operations (admin only)."""
+    holds_released = await cleanup.cleanup_expired_holds()
+    deactivated = await cleanup.deactivate_expired_coupons()
+    purged = await cleanup.purge_old_usage_records()
+
+    return CleanupResponse(
+        expired_holds_released=holds_released,
+        coupons_deactivated=len(deactivated),
+        old_records_purged=purged
+    )
